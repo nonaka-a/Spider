@@ -9,6 +9,33 @@ playerImg.src = 'images/P_back.png';
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+// FPS固定用の変数
+let lastTime = 0;
+const targetFPS = 60;
+const fpsInterval = 1000 / targetFPS;
+
+// Android等のモバイル端末でのオーディオ再生制限を解除する関数
+function unlockAudio() {
+    if (bgmStarted) return;
+    
+    // BGMの再生試行
+    bgm.play().then(() => {
+        bgmStarted = true;
+        console.log("Audio Unlocked");
+    }).catch(e => {
+        console.log("Audio unlocking waiting for more direct interaction:", e);
+    });
+
+    // AudioContextの再開
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+}
+
+// 初回のタップ/クリックでオーディオをアンロック
+window.addEventListener('click', unlockAudio, { once: true });
+window.addEventListener('touchstart', unlockAudio, { once: true });
+
 const CONFIG = {
     LINE_COUNT: 16,
     RING_COUNT: 5,
@@ -73,6 +100,7 @@ let playerDisplayAngle = 0; // スムーズな移動用
 function init() {
     resize();
     generateWeb();
+    bgm.load(); // BGMの読み込みを開始
     animate();
 }
 
@@ -890,7 +918,18 @@ function checkCollisions() {
     });
 }
 
-function animate() {
+function animate(currentTime) {
+    requestAnimationFrame(animate);
+
+    // FPS制御
+    if (!currentTime) currentTime = performance.now();
+    const elapsed = currentTime - lastTime;
+
+    if (elapsed < fpsInterval) return;
+
+    // 誤差を考慮してlastTimeを更新
+    lastTime = currentTime - (elapsed % fpsInterval);
+
     ctx.fillStyle = CONFIG.COLORS.bg;
     ctx.fillRect(0, 0, width, height);
 
@@ -969,7 +1008,6 @@ function animate() {
     }
 
     frame++;
-    requestAnimationFrame(animate);
 }
 
 function firePulse(lineIdx) {
