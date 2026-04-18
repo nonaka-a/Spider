@@ -4,6 +4,9 @@ const scoreDisplay = document.getElementById('score-val');
 const bgm = document.getElementById('bgm');
 let bgmStarted = false;
 
+const playerImg = new Image();
+playerImg.src = 'images/P_back.png';
+
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 const CONFIG = {
@@ -31,6 +34,7 @@ const CONFIG = {
 let width, height, centerX, centerY, maxRadius;
 let pulses = [];
 let attackPulses = [];
+let bossPulses = [];
 let enemies = [];
 let connections = [];
 let score = 0;
@@ -59,6 +63,12 @@ let currentWebOpacity = 1.0;
 let ringStep = 0.0;
 let bossWalls = [];
 let lastBossWallFrame = 0;
+let lastBossAttackFrame = 0;
+
+let currentPerspectiveY = CONFIG.PERSPECTIVE_Y;
+let targetPerspectiveY = CONFIG.PERSPECTIVE_Y;
+
+let playerDisplayAngle = 0; // スムーズな移動用
 
 function init() {
     resize();
@@ -67,17 +77,21 @@ function init() {
 }
 
 function resize() {
-    width = canvas.width = window.innerWidth;
-    height = canvas.height = window.innerHeight;
+    // 内部解像度を1200x600に固定
+    width = canvas.width = 1200;
+    height = canvas.height = 600;
+    
     centerX = width / 2;
     centerY = height * (0.5 + currentOffsetY);
-    maxRadius = Math.min(width, height) * 0.9;
+    // 画面の横長に合わせて最大半径を調整
+    maxRadius = 520;
     ringStep = maxRadius / (CONFIG.RING_COUNT + 1.5);
 }
 
 function toProjected(r, angle) {
-    const x = centerX + Math.cos(angle + viewAngle) * r;
-    const y = centerY + Math.sin(angle + viewAngle) * r * CONFIG.PERSPECTIVE_Y;
+    // 1200x600の横長画面に合わせてX軸を1.4倍に広げる
+    const x = centerX + Math.cos(angle + viewAngle) * r * 1.4;
+    const y = centerY + Math.sin(angle + viewAngle) * r * currentPerspectiveY;
     return { x, y };
 }
 
@@ -105,6 +119,9 @@ function generateWeb() {
     for (let r = 1; r <= CONFIG.RING_COUNT; r++) {
         const radius = ringStep * r;
         for (let l = 0; l < CONFIG.LINE_COUNT; l++) {
+            // 最内周（ring 1）には横の繋がりを作らない（中央をスッキリさせる）
+            if (r === 1) continue;
+
             // あみだくじのルール：同じ高さで一つの点から左右に分岐しないようにする
             if (Math.random() > 0.4) {
                 // 最後の線が0番に繋がる際、0番がすでに右（1番）に繋がっていないかチェック
@@ -373,7 +390,7 @@ function handlePhaseLogic() {
     if (gamePhase === 'DEFENSE') {
         if (enemiesSpawnedThisWave >= waveEnemyCount && enemies.length === 0) {
             gamePhase = 'TRANS_ZOOM'; targetWebScale = 8.0;
-            targetOffsetY = -0.35; 
+            targetOffsetY = -0.05; // -0.35 から変更（位置を下げる）
             
             document.getElementById('controls').style.opacity = '0';
             document.getElementById('controls').style.pointerEvents = 'none';
@@ -393,8 +410,11 @@ function handlePhaseLogic() {
                 bossWalls = [];
                 currentWebScale = 0.0;
                 
-                // Dynamically calculate scale so the maxRadius outer edge hits ~85% of screen height
-                let desiredScale = (height * 0.85 - (height * (0.5 + targetOffsetY))) / (maxRadius * CONFIG.PERSPECTIVE_Y);
+                // ボス戦用の視点調整：俯瞰を抑える（0.4 -> 0.22）
+                targetPerspectiveY = 0.22;
+                
+                // 俯瞰の変化を考慮してスケールを再計算（0.70からさらに下げて0.55に）
+                let desiredScale = (height * 0.55 - (height * (0.5 + targetOffsetY))) / (maxRadius * targetPerspectiveY);
                 targetWebScale = Math.max(1.5, desiredScale);
                 
                 gamePhase = 'TRANS_ATTACK';
@@ -418,6 +438,13 @@ function handlePhaseLogic() {
                 lastBossWallFrame = frame;
             }
         }
+
+        // ボスの攻撃ロジック
+        if (frame - lastBossAttackFrame > 60) {
+            const randomLine = Math.floor(Math.random() * CONFIG.LINE_COUNT);
+            bossPulses.push(new BossPulse(randomLine));
+            lastBossAttackFrame = frame;
+        }
         
         if (bossHp <= 0 && bossMaxHp > 0) {
             bossMaxHp = 0; 
@@ -440,6 +467,9 @@ function handlePhaseLogic() {
                 document.getElementById('phase-ui').style.opacity = 0;
                 document.getElementById('phase-ui').style.color = '#ff0000';
                 
+                // 通常視点に戻す
+                targetPerspectiveY = CONFIG.PERSPECTIVE_Y;
+                
                 document.getElementById('controls').style.opacity = '1';
                 document.getElementById('controls').style.pointerEvents = 'auto';
             }, 3000);
@@ -451,7 +481,8 @@ function drawBoss() {
     const centerPos = toProjected(0, 0);
     const pulseScale = 1 + Math.sin(frame * 0.1) * 0.1;
     ctx.beginPath();
-    ctx.arc(centerPos.x, centerPos.y, 40 * pulseScale, 0, Math.PI * 2);
+    // サイズを2倍（40 -> 80）に拡大
+    ctx.arc(centerPos.x, centerPos.y, 80 * pulseScale, 0, Math.PI * 2);
     ctx.fillStyle = CONFIG.COLORS.boss;
     ctx.shadowBlur = 20;
     ctx.shadowColor = CONFIG.COLORS.boss;
@@ -468,8 +499,24 @@ function drawBoss() {
 }
 
 function drawPlayerOuter() {
-    const angle = (playerAttackLineIdx * Math.PI * 2) / CONFIG.LINE_COUNT;
-    const pos = toProjected(maxRadius * currentWebScale, angle);
+    // 角度をスムーズに補間
+    let targetAngle = (playerAttackLineIdx * Math.PI * 2) / CONFIG.LINE_COUNT;
+    
+    // 短い方の距離で補間するための処理
+    let diff = targetAngle - playerDisplayAngle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    playerDisplayAngle += diff * 0.15;
+
+    const pos = toProjected(maxRadius * currentWebScale, playerDisplayAngle);
+    
+    // 引いたカメラに合わせてサイズを再調整（120 -> 180）
+    const size = 270 * currentWebScale;
+    // 位置をさらに下げる（pos.yのさらに下に配置）
+    ctx.drawImage(playerImg, pos.x - size / 2, pos.y - size * 0.2, size, size);
+    
+    // 既存の光の演出を残す（オプション：不要なら削除可能だが、デザイン統一のため配置のみ維持）
+    /*
     ctx.beginPath();
     ctx.arc(pos.x, pos.y, 15 * currentWebScale, 0, Math.PI * 2);
     ctx.fillStyle = CONFIG.COLORS.pulse;
@@ -477,6 +524,7 @@ function drawPlayerOuter() {
     ctx.shadowColor = CONFIG.COLORS.pulse;
     ctx.fill();
     ctx.shadowBlur = 0;
+    */
 }
 
 class AttackPulse {
@@ -601,14 +649,81 @@ class AttackPulse {
     }
 }
 
-function drawWeb() {
+class BossPulse {
+    constructor(lineIdx) {
+        this.lineIdx = lineIdx;
+        this.distance = 0;
+        this.active = true;
+        this.speed = 10;
+        this.length = 150;
+    }
+
+    update() {
+        this.distance += this.speed;
+        if (this.distance > maxRadius + this.length) {
+            this.active = false;
+        }
+
+        // プレイヤーへの当たり判定（外周付近に到達した時）
+        if (this.distance >= maxRadius - 20 && this.distance <= maxRadius + 20) {
+            if (this.lineIdx === playerAttackLineIdx) {
+                this.active = false;
+                energy = Math.max(0, energy - 10);
+                playZapSound();
+                // 画面を揺らす演出とかほしくなる
+            }
+        }
+    }
+
+    draw() {
+        const angle = (this.lineIdx * Math.PI * 2) / CONFIG.LINE_COUNT;
+        const startDist = Math.max(0, this.distance - this.length);
+        const endDist = Math.min(maxRadius, this.distance);
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#ff0033';
+        ctx.lineWidth = 5;
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = '#ff0000';
+
+        let first = true;
+        for (let d = startDist; d <= endDist; d += 10) {
+            const pos = toProjected(d * currentWebScale, angle);
+            const noiseX = (Math.random() - 0.5) * 10;
+            const noiseY = (Math.random() - 0.5) * 10;
+            if (first) {
+                ctx.moveTo(pos.x + noiseX, pos.y + noiseY);
+                first = false;
+            } else {
+                ctx.lineTo(pos.x + noiseX, pos.y + noiseY);
+            }
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+    }
+}
+
+function drawWeb(side = 'ALL') {
     if (currentWebOpacity <= 0) return;
     ctx.globalAlpha = currentWebOpacity;
-    ctx.strokeStyle = CONFIG.COLORS.line;
-    ctx.lineWidth = 3;
+    
+    // フェーズに応じて線の色を変更（ボス戦は赤系）
+    if (gamePhase === 'ATTACK' || gamePhase === 'TRANS_ATTACK') {
+        ctx.strokeStyle = '#660011';
+    } else {
+        ctx.strokeStyle = CONFIG.COLORS.line;
+    }
+    
+    ctx.lineWidth = 2; // 3 から 2 へ細く
 
     for (let i = 0; i < CONFIG.LINE_COUNT; i++) {
         const angle = (i * (Math.PI * 2)) / CONFIG.LINE_COUNT;
+        const sinVal = Math.sin(angle + viewAngle);
+        
+        // side引数に基づいて奥(BACK)か手前(FRONT)か判定
+        if (side === 'BACK' && sinVal >= 0) continue;
+        if (side === 'FRONT' && sinVal < 0) continue;
+
         const start = toProjected(CONFIG.INNER_RADIUS * currentWebScale, angle);
         const end = toProjected(maxRadius * currentWebScale, angle);
         ctx.beginPath();
@@ -618,12 +733,24 @@ function drawWeb() {
 
         ctx.beginPath();
         ctx.arc(start.x, start.y, 4 * currentWebScale, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffff00';
+        
+        // フェーズに応じて円の色を変更
+        if (gamePhase === 'ATTACK' || gamePhase === 'TRANS_ATTACK') {
+            ctx.fillStyle = '#ff8800'; // オレンジ
+        } else {
+            ctx.fillStyle = '#00ffff'; // 水色
+        }
+        
         ctx.fill();
     }
 
     connections.forEach(c => {
         const angleStart = (c.lineIdx * (Math.PI * 2)) / CONFIG.LINE_COUNT;
+        const sinStart = Math.sin(angleStart + viewAngle);
+        
+        if (side === 'BACK' && sinStart >= 0) return;
+        if (side === 'FRONT' && sinStart < 0) return;
+
         let angleEnd = (c.nextIdx * (Math.PI * 2)) / CONFIG.LINE_COUNT;
         
         if (Math.abs(angleEnd - angleStart) > Math.PI) {
@@ -646,6 +773,10 @@ function drawWeb() {
         bossWalls.forEach(w => {
             const c = w.conn;
             const angleStart = (c.lineIdx * (Math.PI * 2)) / CONFIG.LINE_COUNT;
+            const sinStart = Math.sin(angleStart + viewAngle);
+            if (side === 'BACK' && sinStart >= 0) return;
+            if (side === 'FRONT' && sinStart < 0) return;
+
             let angleEnd = (c.nextIdx * (Math.PI * 2)) / CONFIG.LINE_COUNT;
             if (Math.abs(angleEnd - angleStart) > Math.PI) {
                 if (angleEnd > angleStart) angleEnd -= Math.PI * 2;
@@ -657,7 +788,7 @@ function drawWeb() {
             ctx.strokeStyle = `rgb(255, ${glow}, ${85 + glow})`;
             ctx.shadowColor = '#ff0055';
             ctx.shadowBlur = 15;
-            ctx.lineWidth = 6 * currentWebScale;
+            ctx.lineWidth = 3 * currentWebScale; // 6 から 3 へ細く
             const segments = 10;
             for (let i = 0; i <= segments; i++) {
                 const currentAngle = angleStart + (angleEnd - angleStart) * (i / segments);
@@ -670,14 +801,12 @@ function drawWeb() {
         });
     }
 
-    if (gamePhase === 'DEFENSE') {
+    if (gamePhase === 'DEFENSE' && side !== 'BACK') {
         const centerPos = toProjected(0, 0);
-        ctx.beginPath();
-        ctx.arc(centerPos.x, centerPos.y, 15 * currentWebScale, 0, Math.PI * 2);
-        ctx.fillStyle = CONFIG.COLORS.spider;
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.stroke();
+        
+        // 画像の描画
+        const size = 60 * currentWebScale;
+        ctx.drawImage(playerImg, centerPos.x - size / 2, centerPos.y - size / 2, size, size);
     }
     ctx.globalAlpha = 1.0;
 }
@@ -771,6 +900,8 @@ function animate() {
     centerY = height * (0.5 + currentOffsetY);
     
     currentWebScale += (targetWebScale - currentWebScale) * 0.05;
+    currentPerspectiveY += (targetPerspectiveY - currentPerspectiveY) * 0.05;
+
     if (gamePhase === 'TRANS_ZOOM') {
         currentWebOpacity += (0.0 - currentWebOpacity) * 0.03;
     } else {
@@ -779,7 +910,17 @@ function animate() {
 
     handlePhaseLogic();
 
-    drawWeb();
+    // 1. 奥側のウェブを描画 (BACK side)
+    drawWeb('BACK');
+
+    // 2. ボスを真ん中に描画
+    if (gamePhase === 'ATTACK' || gamePhase === 'TRANS_ATTACK' || gamePhase === 'TRANS_DEFENSE') {
+        drawBoss();
+    }
+    
+    // 3. 手前側のウェブを描画 (FRONT side)
+    drawWeb('FRONT');
+
     if (gamePhase === 'DEFENSE') {
         spawnEnemy();
     }
@@ -796,11 +937,13 @@ function animate() {
         p.draw();
     });
 
-    // Draw Boss
-    if (gamePhase === 'ATTACK' || gamePhase === 'TRANS_ATTACK' || gamePhase === 'TRANS_DEFENSE') {
-        drawBoss();
-    }
-    // Draw Player on outer ring during attack
+    bossPulses = bossPulses.filter(p => p.active);
+    bossPulses.forEach(p => {
+        p.update();
+        p.draw();
+    });
+
+    // 攻撃フェーズのプレイヤーをウェブの上に描画
     if (gamePhase === 'ATTACK' || gamePhase === 'TRANS_ATTACK') {
         drawPlayerOuter();
     }
@@ -908,8 +1051,13 @@ window.addEventListener('touchend', (e) => {
 });
 
 function updateMousePosition(x, y) {
-    const dx = x - centerX;
-    const dy = (y - centerY) / CONFIG.PERSPECTIVE_Y;
+    const rect = canvas.getBoundingClientRect();
+    const internalX = (x - rect.left) * (canvas.width / rect.width);
+    const internalY = (y - rect.top) * (canvas.height / rect.height);
+
+    // X軸の1.4倍スケーリングを考慮して逆計算
+    const dx = (internalX - centerX) / 1.4;
+    const dy = (internalY - centerY) / currentPerspectiveY;
     const angle = Math.atan2(dy, dx);
     let normalizedAngle = angle - viewAngle;
     while (normalizedAngle < 0) normalizedAngle += Math.PI * 2;
