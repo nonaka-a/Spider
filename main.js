@@ -8,6 +8,16 @@ const playerImg = new Image();
 playerImg.src = 'images/P_back.png';
 
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const seLeft = new Audio('sounds/left.mp3');
+const seRight = new Audio('sounds/right.mp3');
+
+// Lottie(Bodymovin)関連の設定
+let playerAnimation;
+const lottieCanvas = document.createElement('canvas');
+// JSONの設定(w:600, h:600)に合わせて設定
+lottieCanvas.width = 600;
+lottieCanvas.height = 600;
+const lottieCtx = lottieCanvas.getContext('2d');
 
 // FPS固定用の変数
 let lastTime = 0;
@@ -101,7 +111,26 @@ function init() {
     resize();
     generateWeb();
     bgm.load(); // BGMの読み込みを開始
+    initLottie(); // Lottieの初期化
     animate();
+}
+
+function initLottie() {
+    playerAnimation = lottie.loadAnimation({
+        renderer: 'canvas',
+        loop: true,
+        autoplay: true,
+        path: 'json/p_back.json',
+        assetsPath: 'images/',
+        rendererSettings: {
+            context: lottieCtx,
+            preserveAspectRatio: 'xMidYMid meet',
+            clearCanvas: true
+        }
+    });
+
+    // サブフレームレンダリング（補間）を無効にし、15FPSのコマ打ち感を再現
+    playerAnimation.setSubframe(false);
 }
 
 function resize() {
@@ -538,10 +567,11 @@ function drawPlayerOuter() {
 
     const pos = toProjected(maxRadius * currentWebScale, playerDisplayAngle);
     
-    // 引いたカメラに合わせてサイズを再調整（120 -> 180）
-    const size = 270 * currentWebScale;
-    // 位置をさらに下げる（pos.yのさらに下に配置）
-    ctx.drawImage(playerImg, pos.x - size / 2, pos.y - size * 0.2, size, size);
+    // 引いたカメラに合わせてサイズを再調整
+    const size = 324 * currentWebScale;
+    // 位置をさらに上げる
+    // playerImgの代わりにlottieCanvasを描画
+    ctx.drawImage(lottieCanvas, pos.x - size / 2, pos.y - size * 0.2 - 100, size, size);
     
     // 既存の光の演出を残す（オプション：不要なら削除可能だが、デザイン統一のため配置のみ維持）
     /*
@@ -832,9 +862,10 @@ function drawWeb(side = 'ALL') {
     if (gamePhase === 'DEFENSE' && side !== 'BACK') {
         const centerPos = toProjected(0, 0);
         
-        // 画像の描画
-        const size = 60 * currentWebScale;
-        ctx.drawImage(playerImg, centerPos.x - size / 2, centerPos.y - size / 2, size, size);
+        // 画像の描画（サイズを1.5倍の90に調整）
+        const size = 90 * currentWebScale;
+        // playerImgの代わりにlottieCanvasを描画
+        ctx.drawImage(lottieCanvas, centerPos.x - size / 2, centerPos.y - size / 2, size, size);
     }
     ctx.globalAlpha = 1.0;
 }
@@ -1114,6 +1145,10 @@ function handleRotateLeft(e) {
         playerAttackLineIdx = (playerAttackLineIdx + 1) % CONFIG.LINE_COUNT;
         targetViewAngle -= Math.PI * 2 / CONFIG.LINE_COUNT;
         
+        // 移動音の再生
+        seLeft.currentTime = 0;
+        seLeft.play().catch(e => console.log("SE Play Error:", e));
+
         if (oldIdx === CONFIG.LINE_COUNT - 1 && playerAttackLineIdx === 0) {
             targetViewAngle += Math.PI * 2;
             viewAngle += Math.PI * 2;
@@ -1131,6 +1166,10 @@ function handleRotateRight(e) {
         playerAttackLineIdx = (playerAttackLineIdx - 1 + CONFIG.LINE_COUNT) % CONFIG.LINE_COUNT;
         targetViewAngle += Math.PI * 2 / CONFIG.LINE_COUNT;
         
+        // 移動音の再生
+        seRight.currentTime = 0;
+        seRight.play().catch(e => console.log("SE Play Error:", e));
+
         if (oldIdx === 0 && playerAttackLineIdx === CONFIG.LINE_COUNT - 1) {
             targetViewAngle -= Math.PI * 2;
             viewAngle -= Math.PI * 2;
