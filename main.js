@@ -129,8 +129,19 @@ function initLottie() {
         }
     });
 
-    // サブフレームレンダリング（補間）を無効にし、15FPSのコマ打ち感を再現
+    // サブフレームレンダリング（補間）を無効にし、30FPSのコマ打ち感を再現
     playerAnimation.setSubframe(false);
+
+    // 初期状態としてIdleアニメーション(0-30)をループ再生
+    playerAnimation.addEventListener('DOMLoaded', () => {
+        playerAnimation.playSegments([0, 30], true);
+    });
+
+    // 移動アニメーション等の単発再生が終わったらIdleに戻る
+    playerAnimation.addEventListener('complete', () => {
+        playerAnimation.setLoop(true);
+        playerAnimation.playSegments([0, 30], true);
+    });
 }
 
 function resize() {
@@ -465,7 +476,9 @@ function handlePhaseLogic() {
             setTimeout(() => {
                 generateWeb();
                 bossWalls = [];
-                currentWebScale = 0.0;
+                // 手前から入ってくる演出のため、初期スケールを大きくし、透明度を0にする
+                currentWebScale = 8.0;
+                currentWebOpacity = 0.0;
                 
                 // ボス戦用の視点調整：俯瞰を抑える（0.4 -> 0.22）
                 targetPerspectiveY = 0.22;
@@ -496,10 +509,11 @@ function handlePhaseLogic() {
             }
         }
 
-        // ボスの攻撃ロジック
+        // ボスの攻撃ロジック：プレイヤー周辺（手前側）のラインのみ狙う
         if (frame - lastBossAttackFrame > 60) {
-            const randomLine = Math.floor(Math.random() * CONFIG.LINE_COUNT);
-            bossPulses.push(new BossPulse(randomLine));
+            const offset = Math.floor(Math.random() * 9) - 4; // -4 to +4 の範囲
+            const targetLine = (playerAttackLineIdx + offset + CONFIG.LINE_COUNT) % CONFIG.LINE_COUNT;
+            bossPulses.push(new BossPulse(targetLine));
             lastBossAttackFrame = frame;
         }
         
@@ -679,18 +693,19 @@ class AttackPulse {
     draw() {
         ctx.beginPath();
         ctx.strokeStyle = CONFIG.COLORS.pulse;
-        ctx.lineWidth = 4;
-        ctx.shadowBlur = 15;
+        ctx.lineWidth = 8; // 4 -> 8 に強化
+        ctx.shadowBlur = 30; // 15 -> 30 に強化
         ctx.shadowColor = CONFIG.COLORS.pulse;
 
         const startDist = Math.max(0, this.distance - CONFIG.PULSE_LENGTH);
         const endDist = Math.min(this.totalLength, this.distance); 
         
         let first = true;
-        for (let d = startDist; d <= endDist; d += 5) {
+        for (let d = startDist; d <= endDist; d += 4) { // 間隔を細かく
             const p = this.getProjectedPosAt(d);
-            const noiseX = (Math.random() - 0.5) * 4;
-            const noiseY = (Math.random() - 0.5) * 4;
+            // ノイズを大きく (4 -> 12)
+            const noiseX = (Math.random() - 0.5) * 12;
+            const noiseY = (Math.random() - 0.5) * 12;
             
             if (first) {
                 ctx.moveTo(p.x + noiseX, p.y + noiseY);
@@ -703,6 +718,20 @@ class AttackPulse {
         const head = this.getProjectedPosAt(endDist);
         ctx.lineTo(head.x, head.y);
         ctx.stroke();
+
+        // 白い芯を追加して迫力を出す
+        ctx.beginPath();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 0;
+        first = true;
+        for (let d = startDist; d <= endDist; d += 8) {
+            const p = this.getProjectedPosAt(d);
+            if (first) { ctx.moveTo(p.x, p.y); first = false; }
+            else { ctx.lineTo(p.x, p.y); }
+        }
+        ctx.stroke();
+        
         ctx.shadowBlur = 0;
     }
 }
@@ -1137,6 +1166,26 @@ function updateMousePosition(x, y) {
 const btnLeft = document.getElementById('rot-left');
 const btnRight = document.getElementById('rot-right');
 
+// 移動時の火花パーティクル生成
+function spawnMoveSparks(dir) {
+    const pos = toProjected(maxRadius * currentWebScale, playerDisplayAngle);
+    // 画面の下端いっぱい（内部解像度の下限付近）に調整
+    const spawnY = height - 20;
+    // 発生位置を移動方向の逆（後方）にずらす
+    const spawnX = pos.x + (dir === 'left' ? 40 : -40);
+    
+    for (let i = 0; i < 45; i++) {
+        const p = new Particle(spawnX, spawnY, '#ffaa00');
+        // 移動方向と逆方向に飛ばす
+        const baseVx = (dir === 'left' ? 1 : -1) * (Math.random() * 15 + 5);
+        p.vx = baseVx + (Math.random() - 0.5) * 12;
+        p.vy = (Math.random() - 0.5) * 15 - 5; // より広範囲に飛ぶ
+        p.size = Math.random() * 3 + 0.5;
+        p.decay = 0.02 + Math.random() * 0.03; // 若干長持ちさせる
+        particles.push(p);
+    }
+}
+
 function handleRotateLeft(e) {
     if(e) { e.preventDefault(); e.stopPropagation(); }
     if (gamePhase.startsWith('TRANS_')) return;
@@ -1153,6 +1202,15 @@ function handleRotateLeft(e) {
             targetViewAngle += Math.PI * 2;
             viewAngle += Math.PI * 2;
         }
+
+        // Lottieアニメーションの切り替え (left: 80-100)
+        if (playerAnimation) {
+            playerAnimation.setLoop(false);
+            playerAnimation.playSegments([80, 100], true);
+        }
+
+        // 足元から火花 (左移動なので右に飛ばす)
+        spawnMoveSparks('left');
     } else {
         targetViewAngle += Math.PI / 4;
     }
@@ -1174,12 +1232,22 @@ function handleRotateRight(e) {
             targetViewAngle -= Math.PI * 2;
             viewAngle -= Math.PI * 2;
         }
+
+        // Lottieアニメーションの切り替え (right: 60-80)
+        if (playerAnimation) {
+            playerAnimation.setLoop(false);
+            playerAnimation.playSegments([60, 80], true);
+        }
+
+        // 足元から火花 (右移動なので左に飛ばす)
+        spawnMoveSparks('right');
     } else {
         targetViewAngle -= Math.PI / 4;
     }
 }
 
 window.addEventListener('keydown', (e) => {
+    if (e.repeat) return; // 押しっぱなしによる連続入力を防止
     if (e.key === 'ArrowLeft') handleRotateLeft();
     if (e.key === 'ArrowRight') handleRotateRight();
 });
